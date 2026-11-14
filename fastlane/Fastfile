@@ -138,6 +138,14 @@ platform :ios do
 
     current_build_number = previous_build_number + 1
 
+    # On dev, use "<dev build>.<run number>" (e.g. 71.12 for APP_DEV_VERSION 1.0.2.71),
+    # so TestFlight shows which dev build this is. Both parts only go up, so App Store
+    # Connect still sees a higher build number each time.
+    dev_parts = xcconfig["APP_DEV_VERSION"].to_s.split(".")
+    if dev_parts.length == 4 && ENV["GITHUB_RUN_NUMBER"]
+      current_build_number = "#{dev_parts[3]}.#{ENV["GITHUB_RUN_NUMBER"]}"
+    end
+
     increment_build_number(
       xcodeproj: "#{GITHUB_WORKSPACE}/Trio.xcodeproj",
       build_number: current_build_number
