@@ -136,7 +136,9 @@ platform :ios do
       api_key: api_key,
     )
 
-    current_build_number = previous_build_number + 1
+    # TestFlight hands back a dev-style number like "71.12" as a String, so take its
+    # first part before adding 1 (a plain integer like 42 still gives 43).
+    current_build_number = previous_build_number.to_s.split(".").first.to_i + 1
 
     # On dev, use "<dev build>.<run number>" (e.g. 71.12 for APP_DEV_VERSION 1.0.2.71),
     # so TestFlight shows which dev build this is. Both parts only go up, so App Store
