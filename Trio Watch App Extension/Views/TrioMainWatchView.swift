@@ -125,7 +125,8 @@ struct TrioMainWatchView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     // two rows, like the original icon + IOB stack: the toolbar slot has a fixed
                     // height, and a third row made both numbers shrink to fit
-                    VStack(alignment: .leading) {
+                    // right edges line up: the basal rate sits under the IOB number, each with its icon
+                    VStack(alignment: .trailing) {
                         HStack(spacing: 3) {
                             Image(systemName: "syringe.fill")
                                 .foregroundStyle(Color.insulin)
@@ -136,13 +137,18 @@ struct TrioMainWatchView: View {
                                 .minimumScaleFactor(0.5)
                         }
 
-                        // re-checked every 15 s so an ended temp basal never keeps showing as current
-                        TimelineView(.periodic(from: .now, by: 15)) { context in
-                            Text(basalRateText(at: context.date))
-                                .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
-                                .frame(alignment: .leading)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.5)
+                        HStack(spacing: 3) {
+                            // same symbol the phone uses for basal rates (onboarding)
+                            Image(systemName: "chart.xyaxis.line")
+                                .foregroundStyle(Color.insulin)
+
+                            // re-checked every 15 s so an ended temp basal never keeps showing as current
+                            TimelineView(.periodic(from: .now, by: 15)) { context in
+                                Text(basalRateText(at: context.date))
+                                    .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.5)
+                            }
                         }
                     }.font(.caption2)
                 }
