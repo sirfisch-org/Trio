@@ -24,6 +24,10 @@ import WatchConnectivity
     var maxYAxisValue: Decimal = 200
     var cob: String? = "--"
     var iob: String? = "--"
+    /// Basal rate in effect on the pump, as formatted by the phone (e.g. "0.85 U/h")
+    var basalRate: String? = "--"
+    /// Time after which `basalRate` may be out of date (temp basal end or schedule change); nil = no known end
+    var basalRateValidUntil: Date?
     var lastLoopTime: String? = "--"
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
@@ -508,6 +512,14 @@ import WatchConnectivity
 
         if let cob = message[WatchMessageKeys.cob] as? String {
             self.cob = cob
+        }
+
+        if let basalRate = message[WatchMessageKeys.basalRate] as? String {
+            self.basalRate = basalRate
+        }
+
+        if let validUntil = message[WatchMessageKeys.basalRateValidUntil] as? TimeInterval {
+            basalRateValidUntil = validUntil > 0 ? Date(timeIntervalSince1970: validUntil) : nil
         }
 
         if let lastLoopTime = message[WatchMessageKeys.lastLoopTime] as? String {
