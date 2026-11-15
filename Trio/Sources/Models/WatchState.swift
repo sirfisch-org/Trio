@@ -13,6 +13,10 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
     var units: GlucoseUnits = .mgdL
     var iob: String?
     var cob: String?
+    /// Basal rate the pump is delivering right now (temp basal if running, otherwise scheduled), formatted for display
+    var basalRate: String?
+    /// When `basalRate` may stop being true (temp basal end or next schedule change); nil if no known end
+    var basalRateValidUntil: Date?
     var lastLoopTime: String?
     var overridePresets: [OverridePresetWatch] = []
     var tempTargetPresets: [TempTargetPresetWatch] = []
@@ -51,6 +55,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
             lhs.units == rhs.units &&
             lhs.iob == rhs.iob &&
             lhs.cob == rhs.cob &&
+            lhs.basalRate == rhs.basalRate &&
+            lhs.basalRateValidUntil == rhs.basalRateValidUntil &&
             lhs.lastLoopTime == rhs.lastLoopTime &&
             lhs.overridePresets == rhs.overridePresets &&
             lhs.tempTargetPresets == rhs.tempTargetPresets &&
@@ -84,6 +90,8 @@ struct WatchState: Hashable, Equatable, Sendable, Encodable, Decodable {
         hasher.combine(units)
         hasher.combine(iob)
         hasher.combine(cob)
+        hasher.combine(basalRate)
+        hasher.combine(basalRateValidUntil)
         hasher.combine(lastLoopTime)
         hasher.combine(overridePresets)
         hasher.combine(tempTargetPresets)

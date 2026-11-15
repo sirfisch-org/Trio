@@ -32,6 +32,14 @@ struct TrioMainWatchView: View {
         return secondsSinceUpdate > 5 * 60
     }
 
+    /// Basal rate in effect, or "--" when the phone's value is old or may have run out
+    private func basalRateText(at date: Date) -> String {
+        if isWatchStateDated || isSessionUnreachable { return "--" }
+        if let validUntil = state.basalRateValidUntil, date >= validUntil { return "--" }
+        guard let basalRate = state.basalRate, !basalRate.isEmpty else { return "--" }
+        return basalRate
+    }
+
     var isSessionUnreachable: Bool {
         guard let session = state.session else {
             return true // No session at all => unreachable
@@ -123,6 +131,15 @@ struct TrioMainWatchView: View {
                             .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
                             .frame(alignment: .leading)
                             .minimumScaleFactor(0.5)
+
+                        // re-checked every 15 s so an ended temp basal never keeps showing as current
+                        TimelineView(.periodic(from: .now, by: 15)) { context in
+                            Text(basalRateText(at: context.date))
+                                .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
+                                .frame(alignment: .leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
+                        }
                     }.font(.caption2)
                 }
 

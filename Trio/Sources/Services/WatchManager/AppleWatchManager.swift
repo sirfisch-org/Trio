@@ -125,6 +125,21 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             }
         }.store(in: &subscriptions)
 
+        // New temp basal, suspend or resume: refresh the basal rate on the watch right away
+        // instead of waiting for the next glucose reading. Debounced to coalesce pump history syncs.
+        coreDataPublisher?.filteredByEntityName("PumpEventStored")
+            .debounce(for: .seconds(2), scheduler: queue)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                // Skip if no watch is paired or app not installed
+                guard let session = self.session, session.isPaired, session.isReachable,
+                      session.isWatchAppInstalled else { return }
+                Task {
+                    let state = await self.setupWatchState()
+                    await self.sendDataToWatch(state)
+                }
+            }.store(in: &subscriptions)
+
         coreDataPublisher?.filteredByEntityName("OverrideStored").sink { [weak self] _ in
             guard let self = self else { return }
             // Skip if no watch is paired or app not installed
@@ -195,6 +210,11 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             )
             let overridePresetIds = try await overrideStorage.fetchForOverridePresets()
             let tempTargetPresetIds = try await tempTargetStorage.fetchForTempTargetPresets()
+            let basalProfile = await fileStorage
+                .retrieveAsync(OpenAPS.Settings.basalProfile, as: [BasalProfileEntry].self)
+                ?? [BasalProfileEntry](from: OpenAPS.defaults(for: OpenAPS.Settings.basalProfile))
+                ?? []
+            let hasPump = !apsManager.pumpName.value.isEmpty
 
             // Get NSManagedObjects
             let glucoseObjects: [GlucoseStored] = try await CoreDataStack.shared
@@ -205,6 +225,8 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 .getNSManagedObject(with: overridePresetIds, context: context)
             let tempTargetPresetObjects: [TempTargetStored] = try await CoreDataStack.shared
                 .getNSManagedObject(with: tempTargetPresetIds, context: context)
+            // nil on failure: a failed basal fetch hides the basal rate but never the rest of the watch state
+            let basalHistoryObjects = await fetchBasalHistory(into: context)
 
             return await context.perform {
                 var watchState = WatchState(date: Date())
@@ -226,6 +248,13 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
                 if let latestDetermination = determinationObjects.first {
                     let cob = NSNumber(value: latestDetermination.cob)
                     watchState.cob = Formatter.integerFormatter.string(from: cob)
+                }
+
+                // Set the basal rate in effect right now (same logic as the Home screen basal pill)
+                if hasPump, let basalHistoryObjects {
+                    let current = Self.currentBasal(history: basalHistoryObjects, profile: basalProfile, now: Date())
+                    watchState.basalRate = current?.label
+                    watchState.basalRateValidUntil = current?.validUntil
                 }
 
                 // Set override presets with their enabled status
@@ -449,6 +478,118 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
         }
     }
 
+    /// Fetches the last 24h of temp basal and suspend/resume pump events, oldest first
+    /// - Parameter targetContext: context the returned objects belong to
+    /// - Returns: those pump events, or nil if the fetch failed
+    private func fetchBasalHistory(into targetContext: NSManagedObjectContext) async -> [PumpEventStored]? {
+        let context = CoreDataStack.shared.newTaskContext()
+        context.name = "fetchBasalHistory"
+        let basalEventPredicate = NSPredicate(
+            format: "tempBasal != nil OR type == %@ OR type == %@",
+            PumpEvent.pumpSuspend.rawValue,
+            PumpEvent.pumpResume.rawValue
+        )
+        do {
+            let results = try await CoreDataStack.shared.fetchEntitiesAsync(
+                ofType: PumpEventStored.self,
+                onContext: context,
+                predicate: NSCompoundPredicate(andPredicateWithSubpredicates: [
+                    NSPredicate.pumpHistoryLast24h,
+                    basalEventPredicate
+                ]),
+                key: "timestamp",
+                ascending: true,
+                relationshipKeyPathsForPrefetching: ["tempBasal"]
+            )
+
+            let ids = try await context.perform {
+                guard let fetchedResults = results as? [PumpEventStored] else {
+                    throw CoreDataError.fetchError(function: #function, file: #file)
+                }
+                return fetchedResults.map(\.objectID)
+            }
+            return try await CoreDataStack.shared.getNSManagedObject(with: ids, context: targetContext)
+        } catch {
+            warning(.watch, "Fetching basal history for watch failed", error: error)
+            return nil
+        }
+    }
+
+    /// Resolves the basal rate in effect at `now`, using the same rules as the Home screen basal pill.
+    /// - Parameters:
+    ///   - history: temp basal and suspend/resume pump events, oldest first
+    ///   - profile: scheduled basal profile
+    /// - Returns: display label plus the time after which the label may no longer be true, or nil if unknown
+    static func currentBasal(
+        history: [PumpEventStored],
+        profile: [BasalProfileEntry],
+        now: Date
+    ) -> (label: String, validUntil: Date?)? {
+        let events = history.filter { $0.tempBasal != nil }.map { event in
+            let start = event.timestamp ?? .distantPast
+            // stored duration is whole minutes, rounded
+            let end = event.tempBasal?.endDate
+                ?? start.addingTimeInterval(Double(event.tempBasal?.duration ?? 0) * 60)
+            return ScheduledBasalInference.BasalEvent(
+                start: start,
+                end: end,
+                rate: event.tempBasal?.rate?.decimalValue ?? 0,
+                isScheduled: event.tempBasal?.isScheduledBasal ?? false
+            )
+        }
+        let suspensions: [(date: Date, isSuspend: Bool)] = history.compactMap { event in
+            guard event.type == PumpEvent.pumpSuspend.rawValue || event.type == PumpEvent.pumpResume.rawValue,
+                  let date = event.timestamp
+            else { return nil }
+            return (date, event.type == PumpEvent.pumpSuspend.rawValue)
+        }
+
+        guard let delivery = ScheduledBasalInference.delivery(
+            events: events,
+            suspensions: suspensions,
+            profile: profile,
+            now: now
+        ) else { return nil }
+
+        func rateLabel(_ rate: Decimal) -> String {
+            let value = Formatter.decimalFormatterWithTwoFractionDigits
+                .string(from: NSDecimalNumber(decimal: rate)) ?? "\(rate)"
+            return value + String(localized: " U/h", comment: "Short unit per hour label for the watch basal rate")
+        }
+
+        switch delivery {
+        case .suspended:
+            // stays true until a resume event, which triggers a fresh watch state
+            return (String(localized: "Suspended", comment: "Basal delivery suspended on the pump"), nil)
+        case let .temp(rate):
+            // the running temp ends at the earliest end time still ahead of us
+            let tempEnd = events.map(\.end).filter { $0 > now }.min()
+            return (rateLabel(rate), tempEnd)
+        case let .scheduled(rate):
+            return (rateLabel(rate), nextBasalScheduleChange(after: now, profile: profile))
+        }
+    }
+
+    /// Next wall-clock time the scheduled basal rate changes, or nil for a single-rate profile.
+    static func nextBasalScheduleChange(after now: Date, profile: [BasalProfileEntry]) -> Date? {
+        guard profile.count > 1 else { return nil }
+        let calendar = Calendar.current
+        let startMinutes = profile.map(\.minutes).sorted()
+        let today = calendar.startOfDay(for: now)
+        for dayOffset in 0 ... 1 {
+            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: today) else { continue }
+            for minutes in startMinutes {
+                // wall-clock boundary; adding seconds to startOfDay drifts on DST days
+                if let boundary = calendar.date(bySettingHour: minutes / 60, minute: minutes % 60, second: 0, of: day),
+                   boundary > now
+                {
+                    return boundary
+                }
+            }
+        }
+        return nil
+    }
+
     /// Fetches last pump event that is a non-external bolus from CoreData
     /// - Returns: NSManagedObjectIDs for last bolus
     func fetchLastBolus() async throws -> NSManagedObjectID? {
@@ -498,6 +639,9 @@ final class BaseWatchManager: NSObject, WCSessionDelegate, Injectable, WatchMana
             WatchMessageKeys.delta: state.delta ?? "",
             WatchMessageKeys.iob: state.iob ?? "",
             WatchMessageKeys.cob: state.cob ?? "",
+            WatchMessageKeys.basalRate: state.basalRate ?? "",
+            // always sent so an old end time never lingers on the watch; 0 means "no known end"
+            WatchMessageKeys.basalRateValidUntil: state.basalRateValidUntil?.timeIntervalSince1970 ?? 0,
             WatchMessageKeys.lastLoopTime: state.lastLoopTime ?? "",
             WatchMessageKeys.glucoseValues: state.glucoseValues.map { value in
                 [
