@@ -125,7 +125,8 @@ struct TrioMainWatchView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     // two rows, like the original icon + IOB stack: the toolbar slot has a fixed
                     // height, and a third row made both numbers shrink to fit
-                    VStack(alignment: .leading) {
+                    // right edges line up: the basal rate sits under the IOB number
+                    VStack(alignment: .trailing) {
                         HStack(spacing: 3) {
                             Image(systemName: "syringe.fill")
                                 .foregroundStyle(Color.insulin)
@@ -140,7 +141,6 @@ struct TrioMainWatchView: View {
                         TimelineView(.periodic(from: .now, by: 15)) { context in
                             Text(basalRateText(at: context.date))
                                 .foregroundStyle(isWatchStateDated ? Color.secondary : Color.white)
-                                .frame(alignment: .leading)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.5)
                         }
