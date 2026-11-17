@@ -2,6 +2,11 @@ name: 4. Build Trio
 run-name: Build Trio (${{ github.ref_name }})
 on:
   workflow_dispatch:
+    inputs:
+      use_my_mac:
+        description: "Run the Mac jobs on my own Mac (start the self-hosted runner first)"
+        type: boolean
+        default: false
   schedule:
     # Check for updates every Sunday
     #   Later logic builds if there are updates or if it is the 2nd Sunday of the month
@@ -189,7 +194,7 @@ jobs:
   build:
     name: Build
     needs: [check_certs, check_status]
-    runs-on: macos-26
+    runs-on: ${{ github.event.inputs.use_my_mac == 'true' && 'trio-mac' || 'macos-26' }}
     permissions:
       contents: write
     if:
