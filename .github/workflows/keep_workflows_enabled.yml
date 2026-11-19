@@ -1,0 +1,35 @@
+name: 5. Keep Build Workflows Enabled
+run-name: Keep build workflows enabled
+# Once a day, calls the GitHub REST API
+#   PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable
+# for workflows 1-4, so a disabled workflow is switched back on before the
+# weekly Sunday build. It never starts a build itself.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "13 5 * * *" # every day at UTC 05:13 (before the Sunday 06:43 build)
+
+permissions:
+  actions: write
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable workflows 1-4
+        env:
+          # GH_PAT (already set up for the build) is used when present,
+          # otherwise the built-in GITHUB_TOKEN with actions: write.
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+        run: |
+          set -euo pipefail
+          for wf in validate_secrets.yml add_identifiers.yml create_certs.yml build_trio.yml; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state)
+            if [ "$state" = "active" ]; then
+              echo "$wf is already enabled."
+            else
+              echo "::warning::$wf was '$state'; enabling it."
+              gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable"
+              echo "$wf is now $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf" --jq .state)."
+            fi
+          done
